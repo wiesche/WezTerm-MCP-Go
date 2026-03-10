@@ -1,0 +1,21 @@
+# Reference/documentation folders (not part of the project)
+WezTerm_github_docs/
+wezterm-mcp-main/
+
+# Build artifacts
+wezterm-mcp.exe
+wezterm-mcp
+*.exe~
+*~
+
+# Go workspace
+go.work
+go.work.sum
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
