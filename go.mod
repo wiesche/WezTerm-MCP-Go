@@ -1,4 +1,4 @@
-module wezterm-mcp
+module wezterm-mcp-go
 
 go 1.26.1
 

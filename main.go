@@ -4,14 +4,14 @@ import (
 	"fmt"
 	"os"
 
-	"wezterm-mcp/config"
-	"wezterm-mcp/wezterm"
+	"wezterm-mcp-go/config"
+	wezterm "wezterm-mcp-go/wezterm-mcp-go"
 
 	"github.com/mark3labs/mcp-go/server"
 )
 
 const (
-	serverName    = "wezterm-mcp"
+	serverName    = "wezterm-mcp-go"
 	serverVersion = "1.0.0"
 )
 
