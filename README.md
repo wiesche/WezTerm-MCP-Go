@@ -27,6 +27,30 @@ go build -o wezterm-mcp .
 go build -o wezterm-mcp.exe .
 ```
 
+## Configuration
+
+The server looks for `config.yaml` in the same directory as the executable by default. You can also specify a custom path with `--config /path/to/config.yaml`.
+
+### config.yaml
+
+```yaml
+# When true, prevents automatic command execution by filtering out
+# carriage return (\r), newline (\n), and line feed characters from
+# text sent to terminals. The user must manually press Enter to execute.
+# Filtered characters are replaced with literal " \r " or " \n "
+manual_command_execution: false
+```
+
+### Manual Command Execution Mode
+
+When `manual_command_execution: true`:
+- All `\r` and `\n` characters are filtered from `send_text` calls
+- Filtered characters are replaced with ` \r ` or ` \n ` (space-padded)
+- The response hints that manual mode is active and lists filtered characters
+- `run_command_sync` is disabled (returns an error) since it requires execution
+
+This mode is useful for collaborative sessions where the user wants to review and approve each command before execution.
+
 ## Tools
 
 | Tool | Description |
@@ -36,7 +60,7 @@ go build -o wezterm-mcp.exe .
 | `get_text` | Read terminal output (`lines=0` for visible screen only) |
 | `activate_pane` | Focus a pane by ID |
 | `send_control_key` | Send Ctrl+key (a, c, d, e, k, l, u, w, z) |
-| `run_command_sync` | Execute command, wait for shell prompt, return output |
+| `run_command_sync` | Execute command, wait for shell prompt, return output (disabled in manual mode) |
 | `read_new_lines` | Return lines added since last call (per-pane cursor tracking) |
 
 All tools accept an optional `pane_id` parameter. If omitted, WezTerm targets the currently focused pane.
@@ -51,6 +75,18 @@ All tools accept an optional `pane_id` parameter. If omitted, WezTerm targets th
     "wezterm": {
       "command": "C:/path/to/wezterm-mcp.exe",
       "args": []
+    }
+  }
+}
+```
+
+With custom config:
+```json
+{
+  "mcpServers": {
+    "wezterm": {
+      "command": "C:/path/to/wezterm-mcp.exe",
+      "args": ["--config", "C:/path/to/config.yaml"]
     }
   }
 }

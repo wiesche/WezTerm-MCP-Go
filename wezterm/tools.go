@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"wezterm-mcp/config"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -36,6 +37,14 @@ var bufferTracker = &BufferTracker{
 	paneLineCounts: make(map[int]int),
 }
 
+// ManualModeState tracks state for manual mode hinting
+type ManualModeState struct {
+	sendTextCallCount int
+	firstCallDone     bool
+}
+
+var manualModeState = &ManualModeState{}
+
 // controlBytes maps key names to Ctrl+key byte sequences.
 var controlBytes = map[string][]byte{
 	"a": {0x01},
@@ -50,6 +59,46 @@ var controlBytes = map[string][]byte{
 }
 
 var defaultPromptRE = regexp.MustCompile(`[$#%>]\s*$`)
+
+// filterExecutionChars removes carriage return, newline, and line feed characters
+// when manual_command_execution is enabled. Returns the filtered text and a list
+// of filtered character descriptions for reporting.
+func filterExecutionChars(text string) (string, []string) {
+	if config.Active == nil || !config.Active.ManualCommandExecution {
+		return text, nil
+	}
+
+	var filtered []string
+	var result strings.Builder
+	runes := []rune(text)
+
+	for i, r := range runes {
+		switch r {
+		case '\r':
+			// Replace with literal " \r " unless at end of line
+			if i+1 < len(runes) && runes[i+1] != '\n' {
+				result.WriteString(" \\r ")
+				filtered = append(filtered, "\\r (carriage return)")
+			} else {
+				result.WriteString(" \\r ")
+				filtered = append(filtered, "\\r (carriage return)")
+			}
+		case '\n':
+			// Replace with literal " \n " unless at end of text
+			if i+1 < len(runes) {
+				result.WriteString(" \\n ")
+				filtered = append(filtered, "\\n (newline)")
+			} else {
+				result.WriteString(" \\n ")
+				filtered = append(filtered, "\\n (newline)")
+			}
+		default:
+			result.WriteRune(r)
+		}
+	}
+
+	return result.String(), filtered
+}
 
 // RegisterTools adds all WezTerm tools to the MCP server.
 func RegisterTools(s *server.MCPServer) {
@@ -122,9 +171,13 @@ func sendTextHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToo
 	paneID := mcp.ParseInt(req, "pane_id", -1)
 	newline := mcp.ParseBoolean(req, "newline", true)
 
+	// Apply newline if requested (before filtering, so it gets filtered in manual mode)
 	if newline {
 		text += "\n"
 	}
+
+	// Filter execution characters if manual_command_execution is enabled
+	filteredText, filteredChars := filterExecutionChars(text)
 
 	ctx, cancel := withTimeout(ctx)
 	defer cancel()
@@ -134,7 +187,7 @@ func sendTextHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToo
 		cliArgs = append(cliArgs, "--pane-id", strconv.Itoa(paneID))
 	}
 
-	_, stderr, err := runWeztermStdin(ctx, []byte(text), cliArgs...)
+	_, stderr, err := runWeztermStdin(ctx, []byte(filteredText), cliArgs...)
 	if err != nil {
 		return mcp.NewToolResultError(errorf("send_text", fmt.Sprintf("pane=%d", paneID), stderr, err)), nil
 	}
@@ -142,11 +195,31 @@ func sendTextHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToo
 	// Reset buffer tracker for this pane
 	delete(bufferTracker.paneLineCounts, paneID)
 
-	msg := fmt.Sprintf("Text sent to pane %d", paneID)
-	if !newline {
-		msg += " (no newline — user must press Enter to execute)"
+	// Build response message
+	var msg strings.Builder
+	msg.WriteString(fmt.Sprintf("Text sent to pane %d", paneID))
+
+	// Determine if we should show the manual mode hint
+	if config.Active != nil && config.Active.ManualCommandExecution {
+		manualModeState.sendTextCallCount++
+		showHint := !manualModeState.firstCallDone ||
+			len(filteredChars) > 0 ||
+			manualModeState.sendTextCallCount%10 == 0
+
+		if showHint {
+			manualModeState.firstCallDone = true
+			msg.WriteString("\n\n[MANUAL MODE] Configuration set for user to execute sent commands manually.")
+			msg.WriteString(" Set 'manual_command_execution: false' in config.yaml to disable.")
+			if len(filteredChars) > 0 {
+				msg.WriteString("\nFiltered characters: ")
+				msg.WriteString(strings.Join(filteredChars, ", "))
+			}
+		}
+	} else if !newline {
+		msg.WriteString(" (no newline — user must press Enter to execute)")
 	}
-	return mcp.NewToolResultText(msg), nil
+
+	return mcp.NewToolResultText(msg.String()), nil
 }
 
 // --- get_text ---
@@ -276,6 +349,11 @@ func runCommandSyncHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.C
 	paneID := mcp.ParseInt(req, "pane_id", -1)
 	timeoutSec := mcp.ParseInt(req, "timeout_seconds", 30)
 	promptPattern := mcp.ParseString(req, "prompt_pattern", "")
+
+	// Check if manual mode is enabled - run_command_sync requires execution
+	if config.Active != nil && config.Active.ManualCommandExecution {
+		return mcp.NewToolResultError("run_command_sync is not available when manual_command_execution is enabled. Use send_text instead."), nil
+	}
 
 	promptRE := defaultPromptRE
 	if promptPattern != "" {

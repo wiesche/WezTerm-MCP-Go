@@ -1,0 +1,8 @@
+# WezTerm MCP Server Configuration
+
+# When true, prevents automatic command execution by filtering out
+# carriage return (\r), newline (\n), and line feed characters from
+# text sent to terminals. The user must manually press Enter to execute.
+# Filtered characters are replaced with literal " \r " or " \n " (space-padded)
+# unless at the end of the line.
+manual_command_execution: false

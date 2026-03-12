@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/mark3labs/mcp-go/server"
+	"wezterm-mcp/config"
 	"wezterm-mcp/wezterm"
+
+	"github.com/mark3labs/mcp-go/server"
 )
 
 const (
@@ -14,6 +16,12 @@ const (
 )
 
 func main() {
+	// Load configuration (from --config flag or default config.yaml)
+	if err := config.Init(); err != nil {
+		fmt.Fprintf(os.Stderr, "config error: %v\n", err)
+		os.Exit(1)
+	}
+
 	s := server.NewMCPServer(
 		serverName,
 		serverVersion,
