@@ -27,7 +27,8 @@ type PaneInfo struct {
 }
 
 // ActivePane tracks the currently active pane ID.
-// When a tool is called with an explicit pane_id, that pane becomes active.
+// -1 means undefined - will auto-select lowest pane ID on first use.
+// Only set when explicitly provided in a tool call.
 var activePaneID = -1
 
 // ManualModeState tracks state for manual mode hinting
@@ -63,32 +64,96 @@ func filterExecutionChars(text string) (string, []string) {
 	var result strings.Builder
 	runes := []rune(text)
 
-	for i, r := range runes {
+	for _, r := range runes {
 		switch r {
 		case '\r':
-			// Replace with literal " \r " unless at end of line
-			if i+1 < len(runes) && runes[i+1] != '\n' {
-				result.WriteString(" \\r ")
-				filtered = append(filtered, "\\r (carriage return)")
-			} else {
-				result.WriteString(" \\r ")
-				filtered = append(filtered, "\\r (carriage return)")
-			}
+			result.WriteString(" \\r ")
+			filtered = append(filtered, "\\r (carriage return)")
 		case '\n':
-			// Replace with literal " \n " unless at end of text
-			if i+1 < len(runes) {
-				result.WriteString(" \\n ")
-				filtered = append(filtered, "\\n (newline)")
-			} else {
-				result.WriteString(" \\n ")
-				filtered = append(filtered, "\\n (newline)")
-			}
+			result.WriteString(" \\n ")
+			filtered = append(filtered, "\\n (newline)")
 		default:
 			result.WriteRune(r)
 		}
 	}
 
 	return result.String(), filtered
+}
+
+// fetchPaneList retrieves the list of available panes.
+func fetchPaneList(ctx context.Context) ([]PaneInfo, error) {
+	stdout, stderr, err := runWezterm(ctx, "cli", "list", "--format", "json")
+	if err != nil {
+		return nil, fmt.Errorf("%s", errorf("list_panes", "failed to list panes", stderr, err))
+	}
+
+	var panes []PaneInfo
+	if err := json.Unmarshal([]byte(stdout), &panes); err != nil {
+		return nil, fmt.Errorf("failed to parse pane list: %w", err)
+	}
+	return panes, nil
+}
+
+// resolvePaneID determines the effective pane ID to use.
+// If explicitID >= 0, it's used and becomes the active pane.
+// If activePaneID >= 0, it's used (but not set as active).
+// Otherwise, auto-selects the lowest available pane ID.
+// Returns the pane ID, whether it was auto-selected, and any error.
+func resolvePaneID(ctx context.Context, explicitID int) (paneID int, autoSelected bool, err error) {
+	// If explicit pane_id provided, use it and make it active
+	if explicitID >= 0 {
+		return explicitID, false, nil
+	}
+
+	// If we have an active pane, use it
+	if activePaneID >= 0 {
+		return activePaneID, false, nil
+	}
+
+	// No active pane - auto-select lowest pane ID
+	panes, err := fetchPaneList(ctx)
+	if err != nil {
+		return -1, false, err
+	}
+	if len(panes) == 0 {
+		return -1, false, fmt.Errorf("no panes available")
+	}
+
+	// Find lowest pane ID
+	lowestID := panes[0].PaneID
+	for _, p := range panes[1:] {
+		if p.PaneID < lowestID {
+			lowestID = p.PaneID
+		}
+	}
+	return lowestID, true, nil
+}
+
+// validatePaneExists checks if a pane ID exists in the current pane list.
+func validatePaneExists(ctx context.Context, paneID int) (bool, []PaneInfo, error) {
+	panes, err := fetchPaneList(ctx)
+	if err != nil {
+		return false, nil, err
+	}
+	for _, p := range panes {
+		if p.PaneID == paneID {
+			return true, panes, nil
+		}
+	}
+	return false, panes, nil
+}
+
+// formatPaneList returns a formatted string of available panes.
+func formatPaneList(panes []PaneInfo) string {
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("%-8s %-8s %-8s %-12s %-10s %s\n", "PANEID", "WINDOW", "TAB", "WORKSPACE", "SIZE", "TITLE"))
+	sb.WriteString(strings.Repeat("-", 80) + "\n")
+	for _, p := range panes {
+		size := fmt.Sprintf("%dx%d", p.Size.Cols, p.Size.Rows)
+		sb.WriteString(fmt.Sprintf("%-8d %-8d %-8d %-12s %-10s %s\n",
+			p.PaneID, p.WindowID, p.TabID, p.Workspace, size, p.Title))
+	}
+	return sb.String()
 }
 
 // RegisterTools adds all WezTerm tools to the MCP server.
@@ -105,8 +170,7 @@ func registerListPanes(s *server.MCPServer) {
 	tool := mcp.NewTool("list_panes",
 		mcp.WithDescription(
 			"List all WezTerm terminal panes with their IDs, titles, working directories, and sizes. "+
-				"Use this to discover which panes are available for interaction. "+
-				"Use get_text to determine which pane is currently active.",
+				"Use this to discover which panes are available for interaction.",
 		),
 	)
 	s.AddTool(tool, listPanesHandler)
@@ -116,25 +180,12 @@ func listPanesHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTo
 	ctx, cancel := withTimeout(ctx)
 	defer cancel()
 
-	stdout, stderr, err := runWezterm(ctx, "cli", "list", "--format", "json")
+	panes, err := fetchPaneList(ctx)
 	if err != nil {
-		return mcp.NewToolResultError(errorf("list_panes", "failed to list panes", stderr, err)), nil
+		return mcp.NewToolResultError(err.Error()), nil
 	}
 
-	var panes []PaneInfo
-	if err := json.Unmarshal([]byte(stdout), &panes); err != nil {
-		return mcp.NewToolResultText(stdout), nil
-	}
-
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("%-8s %-8s %-8s %-12s %-10s %s\n", "PANEID", "WINDOW", "TAB", "WORKSPACE", "SIZE", "TITLE"))
-	sb.WriteString(strings.Repeat("-", 80) + "\n")
-	for _, p := range panes {
-		size := fmt.Sprintf("%dx%d", p.Size.Cols, p.Size.Rows)
-		sb.WriteString(fmt.Sprintf("%-8d %-8d %-8d %-12s %-10s %s\n",
-			p.PaneID, p.WindowID, p.TabID, p.Workspace, size, p.Title))
-	}
-	return mcp.NewToolResultText(sb.String()), nil
+	return mcp.NewToolResultText(formatPaneList(panes)), nil
 }
 
 // --- send_text ---
@@ -144,8 +195,7 @@ func registerSendText(s *server.MCPServer) {
 		mcp.WithDescription(
 			"Send text or a command to a WezTerm pane. By default appends a newline to execute immediately. "+
 				"Set newline=false to stage text without executing (user must press Enter). "+
-				"When pane_id is specified, that pane becomes the active pane. "+
-				"Use get_text to determine which pane is currently active.",
+				"If pane_id is specified, that pane becomes the active pane for subsequent calls.",
 		),
 		mcp.WithString("text", mcp.Required(), mcp.Description("Text or command to send to the terminal")),
 		mcp.WithNumber("pane_id", mcp.Description("Target pane ID. Omit to use the currently active pane. If specified, this pane becomes active.")),
@@ -159,12 +209,42 @@ func sendTextHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToo
 	if text == "" {
 		return mcp.NewToolResultError("text parameter is required"), nil
 	}
-	paneID := mcp.ParseInt(req, "pane_id", -1)
+	explicitPaneID := mcp.ParseInt(req, "pane_id", -1)
 	newline := mcp.ParseBoolean(req, "newline", true)
 
-	// If pane_id is specified, it becomes the active pane
-	if paneID >= 0 {
-		activePaneID = paneID
+	ctx, cancel := withTimeout(ctx)
+	defer cancel()
+
+	// Resolve pane ID
+	paneID, autoSelected, err := resolvePaneID(ctx, explicitPaneID)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to determine pane: %v", err)), nil
+	}
+
+	// Validate pane exists
+	exists, panes, err := validatePaneExists(ctx, paneID)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to validate pane: %v", err)), nil
+	}
+	if !exists {
+		// Pane no longer exists - only reset active pane if this was the active pane
+		wasActive := paneID == activePaneID
+		if wasActive {
+			activePaneID = -1
+		}
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("Pane %d is no longer available.", paneID))
+		if wasActive {
+			sb.WriteString(" Active pane reset.")
+		}
+		sb.WriteString("\n\nAvailable panes:\n")
+		sb.WriteString(formatPaneList(panes))
+		return mcp.NewToolResultError(sb.String()), nil
+	}
+
+	// If explicit pane_id provided, make it active
+	if explicitPaneID >= 0 {
+		activePaneID = explicitPaneID
 	}
 
 	// Apply newline if requested (before filtering, so it gets filtered in manual mode)
@@ -175,22 +255,20 @@ func sendTextHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToo
 	// Filter execution characters if manual_command_execution is enabled
 	filteredText, filteredChars := filterExecutionChars(text)
 
-	ctx, cancel := withTimeout(ctx)
-	defer cancel()
-
 	cliArgs := []string{"cli", "send-text", "--no-paste"}
-	if paneID >= 0 {
-		cliArgs = append(cliArgs, "--pane-id", strconv.Itoa(paneID))
-	}
+	cliArgs = append(cliArgs, "--pane-id", strconv.Itoa(paneID))
 
 	_, stderr, err := runWeztermStdin(ctx, []byte(filteredText), cliArgs...)
 	if err != nil {
 		return mcp.NewToolResultError(errorf("send_text", fmt.Sprintf("pane=%d", paneID), stderr, err)), nil
 	}
 
-	// Build response message
-	var msg strings.Builder
-	msg.WriteString(fmt.Sprintf("Text sent to pane %d", paneID))
+	// Build response with pane_id as structured data
+	result := map[string]interface{}{
+		"pane_id":       paneID,
+		"auto_selected": autoSelected,
+		"message":       fmt.Sprintf("Text sent to pane %d", paneID),
+	}
 
 	// Determine if we should show the manual mode hint
 	if config.Active != nil && config.Active.ManualCommandExecution {
@@ -201,18 +279,17 @@ func sendTextHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToo
 
 		if showHint {
 			manualModeState.firstCallDone = true
-			msg.WriteString("\n\n[MANUAL MODE] Configuration set for user to execute sent commands manually.")
-			msg.WriteString(" Set 'manual_command_execution: false' in config.yaml to disable.")
+			result["manual_mode_hint"] = "Configuration set for user to execute sent commands manually. Set 'manual_command_execution: false' in config.yaml to disable."
 			if len(filteredChars) > 0 {
-				msg.WriteString("\nFiltered characters: ")
-				msg.WriteString(strings.Join(filteredChars, ", "))
+				result["filtered_characters"] = filteredChars
 			}
 		}
 	} else if !newline {
-		msg.WriteString(" (no newline — user must press Enter to execute)")
+		result["message"] = fmt.Sprintf("Text sent to pane %d (no newline — user must press Enter to execute)", paneID)
 	}
 
-	return mcp.NewToolResultText(msg.String()), nil
+	resultJSON, _ := json.MarshalIndent(result, "", "  ")
+	return mcp.NewToolResultText(string(resultJSON)), nil
 }
 
 // --- get_text ---
@@ -222,8 +299,8 @@ func registerGetText(s *server.MCPServer) {
 		mcp.WithDescription(
 			"Read terminal output from a pane. Use lines=0 for visible screen only, "+
 				"or specify a number to read from scrollback history. "+
-				"When pane_id is specified, that pane becomes the active pane. "+
-				"The response includes the pane_id to help determine which pane is active.",
+				"If pane_id is specified, that pane becomes the active pane for subsequent calls. "+
+				"Returns pane_id in the response to help identify the active pane.",
 		),
 		mcp.WithNumber("pane_id", mcp.Description("Target pane ID. Omit to use the currently active pane. If specified, this pane becomes active.")),
 		mcp.WithNumber("lines", mcp.Description("Number of lines to read from scrollback (default: 50, 0=visible screen only)")),
@@ -232,21 +309,46 @@ func registerGetText(s *server.MCPServer) {
 }
 
 func getTextHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	paneID := mcp.ParseInt(req, "pane_id", -1)
+	explicitPaneID := mcp.ParseInt(req, "pane_id", -1)
 	lines := mcp.ParseInt(req, "lines", 50)
-
-	// If pane_id is specified, it becomes the active pane
-	if paneID >= 0 {
-		activePaneID = paneID
-	}
 
 	ctx, cancel := withTimeout(ctx)
 	defer cancel()
 
-	cliArgs := []string{"cli", "get-text"}
-	if paneID >= 0 {
-		cliArgs = append(cliArgs, "--pane-id", strconv.Itoa(paneID))
+	// Resolve pane ID
+	paneID, autoSelected, err := resolvePaneID(ctx, explicitPaneID)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to determine pane: %v", err)), nil
 	}
+
+	// Validate pane exists
+	exists, panes, err := validatePaneExists(ctx, paneID)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to validate pane: %v", err)), nil
+	}
+	if !exists {
+		// Pane no longer exists - only reset active pane if this was the active pane
+		wasActive := paneID == activePaneID
+		if wasActive {
+			activePaneID = -1
+		}
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("Pane %d is no longer available.", paneID))
+		if wasActive {
+			sb.WriteString(" Active pane reset.")
+		}
+		sb.WriteString("\n\nAvailable panes:\n")
+		sb.WriteString(formatPaneList(panes))
+		return mcp.NewToolResultError(sb.String()), nil
+	}
+
+	// If explicit pane_id provided, make it active
+	if explicitPaneID >= 0 {
+		activePaneID = explicitPaneID
+	}
+
+	cliArgs := []string{"cli", "get-text"}
+	cliArgs = append(cliArgs, "--pane-id", strconv.Itoa(paneID))
 	if lines > 0 {
 		cliArgs = append(cliArgs, "--start-line", strconv.Itoa(-lines))
 	}
@@ -256,15 +358,15 @@ func getTextHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTool
 		return mcp.NewToolResultError(errorf("get_text", fmt.Sprintf("pane=%d lines=%d", paneID, lines), stderr, err)), nil
 	}
 
-	// Build response with pane_id info
-	var msg strings.Builder
-	msg.WriteString(fmt.Sprintf("[PANE %d]\n", paneID))
-	if stdout == "" {
-		msg.WriteString("(empty output)")
-	} else {
-		msg.WriteString(stdout)
+	// Build response with pane_id as structured data
+	result := map[string]interface{}{
+		"pane_id":       paneID,
+		"auto_selected": autoSelected,
+		"output":        stdout,
 	}
-	return mcp.NewToolResultText(msg.String()), nil
+
+	resultJSON, _ := json.MarshalIndent(result, "", "  ")
+	return mcp.NewToolResultText(string(resultJSON)), nil
 }
 
 // --- send_control_key ---
@@ -273,8 +375,7 @@ func registerSendControlKey(s *server.MCPServer) {
 	tool := mcp.NewTool("send_control_key",
 		mcp.WithDescription(
 			"Send a Ctrl+key sequence to a pane (e.g., 'c' for Ctrl+C to interrupt, 'd' for Ctrl+D for EOF). "+
-				"When pane_id is specified, that pane becomes the active pane. "+
-				"Use get_text to determine which pane is currently active.",
+				"If pane_id is specified, that pane becomes the active pane for subsequent calls.",
 		),
 		mcp.WithString("key", mcp.Required(), mcp.Description("Key to send with Ctrl (a, c, d, e, k, l, u, w, z)")),
 		mcp.WithNumber("pane_id", mcp.Description("Target pane ID. Omit to use the currently active pane. If specified, this pane becomes active.")),
@@ -284,12 +385,7 @@ func registerSendControlKey(s *server.MCPServer) {
 
 func sendControlKeyHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	key := strings.ToLower(mcp.ParseString(req, "key", ""))
-	paneID := mcp.ParseInt(req, "pane_id", -1)
-
-	// If pane_id is specified, it becomes the active pane
-	if paneID >= 0 {
-		activePaneID = paneID
-	}
+	explicitPaneID := mcp.ParseInt(req, "pane_id", -1)
 
 	seq, ok := controlBytes[key]
 	if !ok {
@@ -299,14 +395,53 @@ func sendControlKeyHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.C
 	ctx, cancel := withTimeout(ctx)
 	defer cancel()
 
-	cliArgs := []string{"cli", "send-text", "--no-paste"}
-	if paneID >= 0 {
-		cliArgs = append(cliArgs, "--pane-id", strconv.Itoa(paneID))
+	// Resolve pane ID
+	paneID, autoSelected, err := resolvePaneID(ctx, explicitPaneID)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to determine pane: %v", err)), nil
 	}
+
+	// Validate pane exists
+	exists, panes, err := validatePaneExists(ctx, paneID)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to validate pane: %v", err)), nil
+	}
+	if !exists {
+		// Pane no longer exists - only reset active pane if this was the active pane
+		wasActive := paneID == activePaneID
+		if wasActive {
+			activePaneID = -1
+		}
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("Pane %d is no longer available.", paneID))
+		if wasActive {
+			sb.WriteString(" Active pane reset.")
+		}
+		sb.WriteString("\n\nAvailable panes:\n")
+		sb.WriteString(formatPaneList(panes))
+		return mcp.NewToolResultError(sb.String()), nil
+	}
+
+	// If explicit pane_id provided, make it active
+	if explicitPaneID >= 0 {
+		activePaneID = explicitPaneID
+	}
+
+	cliArgs := []string{"cli", "send-text", "--no-paste"}
+	cliArgs = append(cliArgs, "--pane-id", strconv.Itoa(paneID))
 
 	_, stderr, err := runWeztermStdin(ctx, seq, cliArgs...)
 	if err != nil {
 		return mcp.NewToolResultError(errorf("send_control_key", fmt.Sprintf("key=Ctrl+%s pane=%d", strings.ToUpper(key), paneID), stderr, err)), nil
 	}
-	return mcp.NewToolResultText(fmt.Sprintf("Sent Ctrl+%s to pane %d", strings.ToUpper(key), paneID)), nil
+
+	// Build response with pane_id as structured data
+	result := map[string]interface{}{
+		"pane_id":       paneID,
+		"auto_selected": autoSelected,
+		"message":       fmt.Sprintf("Sent Ctrl+%s to pane %d", strings.ToUpper(key), paneID),
+	}
+
+	resultJSON, _ := json.MarshalIndent(result, "", "  ")
+	return mcp.NewToolResultText(string(resultJSON)), nil
 }
