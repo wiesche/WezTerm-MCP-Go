@@ -24,8 +24,8 @@ The initial version of this project was created after [hiraishikentaro's TS impl
 ## Installation
 
 ```sh
-git clone https://github.com/yourusername/wezterm-mcp-go.git
-cd wezterm-mcp-go
+git clone https://github.com/wiesche/WezTerm-MCP-Go.git
+cd WezTerm-MCP-Go
 go build -o wezterm-mcp-go .
 ```
 Add the wezterm-mcp-go executable as a simple STDIO MCP server to the config of your favorite AI buddy. No other parameters needed. A config.yaml in the same directory or as parameter `--config /path/to/config.yaml` is optional.
@@ -52,28 +52,45 @@ manual_command_execution: false
 
 ### Pane Management
 
-Panes need to be part of a unix domain (workspace) in order to be reachable over the WezTerm mux server and be visible to the MCP server (works on Windows the same way). New panes started using the MCP server will be part of domain 'local' and be visible by default. You can start new panes running any shell installed on your system or even available as portable executable binary. Just give your AI assistant the path to the shell executable.
+Panes need to be part of a unix domain (workspace) in order to be reachable over the WezTerm mux server and be visible to the MCP server (works on Windows the same way). New panes started using the MCP server will be part of domain 'local' and be visible by default. You can start new panes running any shell installed on your system or even available as portable executable binary. Just tell your AI assistant the path to the shell executable.
 
 ## MCP Client Setup
 
-**Windsurf / Cascade:**
+You can usually just ask your AI assistant to add the MCP server, giving the path to the executable, or edit the config manually:
+
+**Windsurf IDE (Windows):**
 ```json
 {
   "mcpServers": {
     "wezterm": {
-      "command": "/path/to/wezterm-mcp-go"
+      "command": "C:\\Users\\your-user-name\\.windsurf\\mcp\\wezterm-mcp-go.exe"
     }
   }
 }
 ```
 
-**Claude Desktop:**
+**Claude Desktop (macOS):**
 ```json
 {
   "mcpServers": {
     "wezterm": {
-      "command": "/path/to/wezterm-mcp-go"
+      "command": "/Users/your-user-name/.claude/mcp/wezterm-mcp-go"
     }
   }
 }
 ```
+
+**Codename Goose (Windows):**
+```yaml
+  weztermMCPGo:
+    enabled: true
+    type: stdio
+    name: WezTerm MCP (Go)
+    description: WezTerm mux access. Run commands in shared terminal panes the user can see and control. Auto-starts mux if not running.
+    cmd: C:\Users\your-user-name\.goose\mcp\wezterm-mcp-go.exe
+    args: []
+    envs: {}
+    env_keys: []
+    timeout: 300
+    bundled: null
+    available_tools: []
