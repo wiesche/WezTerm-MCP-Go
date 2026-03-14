@@ -3,14 +3,16 @@ WezTerm_github_docs/
 wezterm-mcp-main/
 
 # Build artifacts
-wezterm-mcp.exe
-wezterm-mcp
+*.exe
 *.exe~
 *~
 
 # Go workspace
 go.work
 go.work.sum
+
+# Test/debug programs
+cmd/testspawn/
 
 # IDE
 .vscode/

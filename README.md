@@ -1,6 +1,19 @@
 # wezterm-mcp-go
 
-MCP server for WezTerm terminal multiplexer. Enables LLM coding assistants to interact with terminal panes via the MCP protocol.
+A simple STDIO based MCP server for the [WezTerm](https://wezterm.org/) terminal multiplexer. Using this server for CLI command execution in LLM assistants like Claude Code allows for collaborative command line prompt use in the fabulous WezTerm terminal for any shell (PowerShell, CMD, WSL Bash, etc.) WezTerm as well as this MCP server natively run on both, Linux and Windows systems and is a more powerful alternative for TMUX based collaborative terminal use.
+
+Use WezTerm via wezterm-mcp-go in order to:
+
+1. Make your terminal available to an LLM assistant 🖥️
+2. Add context to your chat session using CLI commands 💬
+3. Have your assistant execute commands in your terminal directly ⚡
+4. Have your assistant suggest a command for you to review and edit before execution by activating `manual_command_execution` mode in the config.yaml ✏️
+5. Use any shell installed on your system as a pane within WezTerm without needing to register it in the config, before 🐚
+6. Use any app which has a terminal user interface (TUI) collaboratively with your assistant in a connected WezTerm pane 🖥️
+
+, natively on either Windows, Linux, or macOS systems.
+
+The initial version of this project was created with [hiraishikentaro's TS implementation](https://github.com/hiraishikentaro/wezterm-mcp/) for reference.
 
 ## Features
 

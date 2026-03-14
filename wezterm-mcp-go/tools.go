@@ -162,6 +162,7 @@ func RegisterTools(s *server.MCPServer) {
 	registerSendText(s)
 	registerGetText(s)
 	registerSendControlKey(s)
+	registerSpawnNewShell(s)
 }
 
 // --- list_panes ---
@@ -180,12 +181,26 @@ func listPanesHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTo
 	ctx, cancel := withTimeout(ctx)
 	defer cancel()
 
+	// Check for GUI warning
+	var warnings []string
+	if !IsWezTermGUIRunning() {
+		warnings = append(warnings, "No WezTerm GUI instance found on system. Start WezTerm to enable pane operations.")
+	}
+
 	panes, err := fetchPaneList(ctx)
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 
-	return mcp.NewToolResultText(formatPaneList(panes)), nil
+	result := map[string]interface{}{
+		"panes": formatPaneList(panes),
+	}
+	if len(warnings) > 0 {
+		result["warnings"] = warnings
+	}
+
+	resultJSON, _ := json.MarshalIndent(result, "", "  ")
+	return mcp.NewToolResultText(string(resultJSON)), nil
 }
 
 // --- send_text ---
@@ -214,6 +229,12 @@ func sendTextHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToo
 
 	ctx, cancel := withTimeout(ctx)
 	defer cancel()
+
+	// Check for GUI warning
+	var warnings []string
+	if !IsWezTermGUIRunning() {
+		warnings = append(warnings, "No WezTerm GUI instance found on system. Start WezTerm to enable pane operations.")
+	}
 
 	// Resolve pane ID
 	paneID, autoSelected, err := resolvePaneID(ctx, explicitPaneID)
@@ -269,6 +290,9 @@ func sendTextHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToo
 		"auto_selected": autoSelected,
 		"message":       fmt.Sprintf("Text sent to pane %d", paneID),
 	}
+	if len(warnings) > 0 {
+		result["warnings"] = warnings
+	}
 
 	// Determine if we should show the manual mode hint
 	if config.Active != nil && config.Active.ManualCommandExecution {
@@ -314,6 +338,12 @@ func getTextHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTool
 
 	ctx, cancel := withTimeout(ctx)
 	defer cancel()
+
+	// Check for GUI warning
+	var warnings []string
+	if !IsWezTermGUIRunning() {
+		warnings = append(warnings, "No WezTerm GUI instance found on system. Start WezTerm to enable pane operations.")
+	}
 
 	// Resolve pane ID
 	paneID, autoSelected, err := resolvePaneID(ctx, explicitPaneID)
@@ -364,6 +394,9 @@ func getTextHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTool
 		"auto_selected": autoSelected,
 		"output":        stdout,
 	}
+	if len(warnings) > 0 {
+		result["warnings"] = warnings
+	}
 
 	resultJSON, _ := json.MarshalIndent(result, "", "  ")
 	return mcp.NewToolResultText(string(resultJSON)), nil
@@ -394,6 +427,12 @@ func sendControlKeyHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.C
 
 	ctx, cancel := withTimeout(ctx)
 	defer cancel()
+
+	// Check for GUI warning
+	var warnings []string
+	if !IsWezTermGUIRunning() {
+		warnings = append(warnings, "No WezTerm GUI instance found on system. Start WezTerm to enable pane interaction.")
+	}
 
 	// Resolve pane ID
 	paneID, autoSelected, err := resolvePaneID(ctx, explicitPaneID)
@@ -440,6 +479,111 @@ func sendControlKeyHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.C
 		"pane_id":       paneID,
 		"auto_selected": autoSelected,
 		"message":       fmt.Sprintf("Sent Ctrl+%s to pane %d", strings.ToUpper(key), paneID),
+	}
+	if len(warnings) > 0 {
+		result["warnings"] = warnings
+	}
+
+	resultJSON, _ := json.MarshalIndent(result, "", "  ")
+	return mcp.NewToolResultText(string(resultJSON)), nil
+}
+
+// --- spawn_new_shell ---
+
+func registerSpawnNewShell(s *server.MCPServer) {
+	tool := mcp.NewTool("spawn_new_shell",
+		mcp.WithDescription(
+			"Spawn a new terminal pane with a shell. Starts WezTerm GUI if not running. "+
+				"The new pane becomes the active pane. Returns the new pane ID.",
+		),
+		mcp.WithString("shell", mcp.Description("Shell command or path to start (e.g., 'powershell', 'bash', 'wsl'). Default: system default shell.")),
+		mcp.WithString("domain", mcp.Description("Domain name for spawn (default: 'local'). Use 'ssh:hostname' for remote domains.")),
+	)
+	s.AddTool(tool, spawnNewShellHandler)
+}
+
+func spawnNewShellHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	shell := mcp.ParseString(req, "shell", "")
+	domain := mcp.ParseString(req, "domain", "local")
+
+	// Check if wezterm is on PATH
+	if !CheckWezTermOnPath() {
+		return mcp.NewToolResultError(
+			"WezTerm is not installed or not on PATH.\n" +
+				"Get WezTerm for free at: https://wezterm.org/"), nil
+	}
+
+	// Check if WezTerm GUI is running, start if not
+	guiWasStarted := false
+	if !IsWezTermGUIRunning() {
+		if err := StartWezTermGUI(ctx); err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("Failed to start WezTerm GUI: %v", err)), nil
+		}
+		guiWasStarted = true
+	}
+
+	ctx, cancel := withTimeout(ctx)
+	defer cancel()
+
+	// Build spawn command: wezterm cli spawn --domain-name <domain> -- <shell>
+	cliArgs := []string{"cli", "spawn", "--domain-name", domain}
+	if shell != "" {
+		cliArgs = append(cliArgs, "--", shell)
+	}
+
+	stdout, stderr, err := runWezterm(ctx, cliArgs...)
+	if err != nil {
+		// Check if this is the "pane not specified" error indicating GUI wasn't ready
+		if strings.Contains(stderr, "--pane-id was not specified") ||
+			strings.Contains(stderr, "$WEZTERM_PANE") {
+			result := map[string]interface{}{
+				"error":   errorf("spawn_new_shell", fmt.Sprintf("domain=%s shell=%s", domain, shell), stderr, err),
+				"warning": "No pane added. The WezTerm GUI process needed to spin up first in the last tool call. Repeat in order to add a new pane.",
+			}
+			resultJSON, _ := json.MarshalIndent(result, "", "  ")
+			return mcp.NewToolResultText(string(resultJSON)), nil
+		}
+		return mcp.NewToolResultError(errorf("spawn_new_shell", fmt.Sprintf("domain=%s shell=%s", domain, shell), stderr, err)), nil
+	}
+
+	// Parse the output to get the new pane ID
+	// Output format: "pane_id:7" or just the number
+	newPaneIDStr := strings.TrimSpace(stdout)
+	newPaneIDStr = strings.TrimPrefix(newPaneIDStr, "pane_id:")
+	newPaneID, err := strconv.Atoi(newPaneIDStr)
+	if err != nil {
+		// Try to extract number from output
+		for _, part := range strings.Fields(stdout) {
+			if id, e := strconv.Atoi(part); e == nil {
+				newPaneID = id
+				break
+			}
+		}
+		if newPaneID == 0 {
+			return mcp.NewToolResultError(fmt.Sprintf("Failed to parse pane ID from spawn output: %s", stdout)), nil
+		}
+	}
+
+	// Activate the new pane
+	_, stderr, err = runWezterm(ctx, "cli", "activate-pane", "--pane-id", strconv.Itoa(newPaneID))
+	if err != nil {
+		// Non-fatal: pane was created but activation failed
+		// Continue and return success with warning
+	}
+
+	// Set as active pane
+	activePaneID = newPaneID
+
+	// Build response
+	result := map[string]interface{}{
+		"pane_id":     newPaneID,
+		"domain":      domain,
+		"shell":       shell,
+		"gui_started": guiWasStarted,
+		"message":     fmt.Sprintf("Spawned new pane %d", newPaneID),
+	}
+	if shell == "" {
+		result["shell"] = "(default)"
 	}
 
 	resultJSON, _ := json.MarshalIndent(result, "", "  ")
