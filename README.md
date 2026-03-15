@@ -21,6 +21,29 @@ The initial version of this project was created after [hiraishikentaro's TS impl
 - WezTerm mux server running (usually activated on spawning panes via MCP)
 - Go 1.21+ (just for compiling)
 
+### WezTerm Configuration
+
+In order to see any panes opened via the wezterm-mcp-go server you will have to connect to the 'unix' domain by right-clicking on the plus '+' button for adding new panes and selecting '4. New Tab (domain 'unix'...)'. This will also add any pane started in that domain to the terminal GUI. You can also start a mux-reachable pane like that before launching the MCP server and ask your AI assistant to connect to it (ask to list panes, first). Note that you cannot connect to panes which are not started as a member of any public domain.
+Alternatively, you can create a .wezterm.lua in your home directory (if not already present) and configure it to connect any new panes to the 'unix' domain by default from startup:
+Add this line before `return config` in your existing .wezterm.lua:
+
+```lua
+config.default_gui_startup_args = { 'connect', 'unix' }
+```
+If you start from scratch this would be a minimal .wezterm.lua configuration:
+
+Example:
+```lua
+local wezterm = require 'wezterm'
+local config = wezterm.config_builder()
+
+config.default_gui_startup_args = { 'connect', 'unix' }
+
+return config
+```
+
+If you're new to WezTerm its recommended to also add some useful keybindings and stuff from the [official documentation](https://wezterm.org/config/files.html).
+
 ## Installation
 
 ```sh
