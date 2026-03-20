@@ -388,6 +388,11 @@ func getTextHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTool
 		return mcp.NewToolResultError(errorf("get_text", fmt.Sprintf("pane=%d lines=%d", paneID, lines), stderr, err)), nil
 	}
 
+	// Add execution hint if manual mode is not active
+	if config.Active == nil || !config.Active.ManualCommandExecution {
+		warnings = append(warnings, "Commands must end with a newline (Enter) to execute. Use send_text with newline=true, or send_control_key with key='m' (Ctrl+M) to send a carriage return.")
+	}
+
 	// Build response with pane_id as structured data
 	result := map[string]interface{}{
 		"pane_id":       paneID,
