@@ -39,6 +39,24 @@ type ManualModeState struct {
 
 var manualModeState = &ManualModeState{}
 
+// paneInfoCache stores pane info from list_panes calls for shell detection
+var paneInfoCache = make(map[int]PaneInfo)
+
+// isWindowsShell checks if a pane is running a Windows shell (cmd.exe or powershell.exe)
+// based on the pane title which typically contains the process name.
+func isWindowsShell(paneID int) bool {
+	pane, ok := paneInfoCache[paneID]
+	if !ok {
+		return false
+	}
+	title := strings.ToLower(pane.Title)
+	// Check for common Windows shell indicators in title
+	return strings.Contains(title, "cmd.exe") ||
+		strings.Contains(title, "powershell.exe") ||
+		strings.Contains(title, "powershell") ||
+		strings.Contains(title, "cmd") && strings.Contains(title, ".exe")
+}
+
 // controlBytes maps key names to Ctrl+key byte sequences.
 var controlBytes = map[string][]byte{
 	"a": {0x01},
@@ -144,14 +162,33 @@ func validatePaneExists(ctx context.Context, paneID int) (bool, []PaneInfo, erro
 }
 
 // formatPaneList returns a formatted string of available panes.
-func formatPaneList(panes []PaneInfo) string {
+// If activePaneID >= 0, marks that pane with '(active)'.
+// If activePaneID == -1, finds and marks the lowest pane ID as active.
+func formatPaneList(panes []PaneInfo, activePaneID int) string {
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("%-8s %-8s %-8s %-12s %-10s %s\n", "PANEID", "WINDOW", "TAB", "WORKSPACE", "SIZE", "TITLE"))
 	sb.WriteString(strings.Repeat("-", 80) + "\n")
+
+	// Determine which pane is active
+	activeID := activePaneID
+	if activeID == -1 && len(panes) > 0 {
+		// Auto-select lowest pane ID
+		activeID = panes[0].PaneID
+		for _, p := range panes[1:] {
+			if p.PaneID < activeID {
+				activeID = p.PaneID
+			}
+		}
+	}
+
 	for _, p := range panes {
 		size := fmt.Sprintf("%dx%d", p.Size.Cols, p.Size.Rows)
-		sb.WriteString(fmt.Sprintf("%-8d %-8d %-8d %-12s %-10s %s\n",
-			p.PaneID, p.WindowID, p.TabID, p.Workspace, size, p.Title))
+		activeMarker := ""
+		if p.PaneID == activeID {
+			activeMarker = " (active)"
+		}
+		sb.WriteString(fmt.Sprintf("%-8d %-8d %-8d %-12s %-10s %s%s\n",
+			p.PaneID, p.WindowID, p.TabID, p.Workspace, size, p.Title, activeMarker))
 	}
 	return sb.String()
 }
@@ -192,8 +229,13 @@ func listPanesHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTo
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 
+	// Update pane info cache for shell detection
+	for _, pane := range panes {
+		paneInfoCache[pane.PaneID] = pane
+	}
+
 	result := map[string]interface{}{
-		"panes": formatPaneList(panes),
+		"panes": formatPaneList(panes, activePaneID),
 	}
 	if len(warnings) > 0 {
 		result["warnings"] = warnings
@@ -259,7 +301,7 @@ func sendTextHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToo
 			sb.WriteString(" Active pane reset.")
 		}
 		sb.WriteString("\n\nAvailable panes:\n")
-		sb.WriteString(formatPaneList(panes))
+		sb.WriteString(formatPaneList(panes, activePaneID))
 		return mcp.NewToolResultError(sb.String()), nil
 	}
 
@@ -269,8 +311,13 @@ func sendTextHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToo
 	}
 
 	// Apply newline if requested (before filtering, so it gets filtered in manual mode)
+	// Use \r\n for Windows shells (cmd.exe, powershell.exe) for proper carriage return
 	if newline {
-		text += "\n"
+		if isWindowsShell(paneID) {
+			text += "\r\n"
+		} else {
+			text += "\n"
+		}
 	}
 
 	// Filter execution characters if manual_command_execution is enabled
@@ -324,7 +371,7 @@ func registerGetText(s *server.MCPServer) {
 			"Read terminal output from a pane. Use lines=0 for visible screen only, "+
 				"or specify a number to read from scrollback history. "+
 				"If pane_id is specified, that pane becomes the active pane for subsequent calls. "+
-				"Returns pane_id in the response to help identify the active pane.",
+				"For specific line ranges, use 'wezterm cli get-text --start-line X --end-line Y' directly in the terminal.",
 		),
 		mcp.WithNumber("pane_id", mcp.Description("Target pane ID. Omit to use the currently active pane. If specified, this pane becomes active.")),
 		mcp.WithNumber("lines", mcp.Description("Number of lines to read from scrollback (default: 50, 0=visible screen only)")),
@@ -368,7 +415,7 @@ func getTextHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTool
 			sb.WriteString(" Active pane reset.")
 		}
 		sb.WriteString("\n\nAvailable panes:\n")
-		sb.WriteString(formatPaneList(panes))
+		sb.WriteString(formatPaneList(panes, activePaneID))
 		return mcp.NewToolResultError(sb.String()), nil
 	}
 
@@ -462,7 +509,7 @@ func sendControlKeyHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.C
 			sb.WriteString(" Active pane reset.")
 		}
 		sb.WriteString("\n\nAvailable panes:\n")
-		sb.WriteString(formatPaneList(panes))
+		sb.WriteString(formatPaneList(panes, activePaneID))
 		return mcp.NewToolResultError(sb.String()), nil
 	}
 
