@@ -42,6 +42,9 @@ var manualModeState = &ManualModeState{}
 // paneInfoCache stores pane info from list_panes calls for shell detection
 var paneInfoCache = make(map[int]PaneInfo)
 
+// lastSendTextHadNewline tracks whether the last send_text call for each pane included a newline
+var lastSendTextHadNewline = make(map[int]bool)
+
 // isWindowsShell checks if a pane is running a Windows shell (cmd.exe or powershell.exe)
 // based on the pane title which typically contains the process name.
 func isWindowsShell(paneID int) bool {
@@ -310,6 +313,15 @@ func sendTextHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToo
 		activePaneID = explicitPaneID
 	}
 
+	// Refresh pane cache if shell type is unknown (for Windows shell detection)
+	if _, ok := paneInfoCache[paneID]; !ok {
+		if panes, err := fetchPaneList(ctx); err == nil {
+			for _, pane := range panes {
+				paneInfoCache[pane.PaneID] = pane
+			}
+		}
+	}
+
 	// Apply newline if requested (before filtering, so it gets filtered in manual mode)
 	// Use \r\n for Windows shells (cmd.exe, powershell.exe) for proper carriage return
 	if newline {
@@ -330,6 +342,9 @@ func sendTextHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToo
 	if err != nil {
 		return mcp.NewToolResultError(errorf("send_text", fmt.Sprintf("pane=%d", paneID), stderr, err)), nil
 	}
+
+	// Track whether this send_text had a newline (for get_text warning)
+	lastSendTextHadNewline[paneID] = newline
 
 	// Build response with pane_id as structured data
 	result := map[string]interface{}{
@@ -435,9 +450,15 @@ func getTextHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTool
 		return mcp.NewToolResultError(errorf("get_text", fmt.Sprintf("pane=%d lines=%d", paneID, lines), stderr, err)), nil
 	}
 
-	// Add execution hint if manual mode is not active
+	// Add execution hint only if last send_text had no newline and manual mode is not active
 	if config.Active == nil || !config.Active.ManualCommandExecution {
-		warnings = append(warnings, "Commands must end with a newline (Enter) to execute. Use send_text with newline=true, or send_control_key with key='m' (Ctrl+M) to send a carriage return.")
+		if !lastSendTextHadNewline[paneID] {
+			if isWindowsShell(paneID) {
+				warnings = append(warnings, "Previous line was sent without \\r\\n (Enter). Use send_text with newline=true, or send_control_key with key='m' (Ctrl+M) to execute.")
+			} else {
+				warnings = append(warnings, "Previous line was sent without a newline (Enter). Use send_text with newline=true, or send_control_key with key='m' (Ctrl+M) to execute.")
+			}
+		}
 	}
 
 	// Build response with pane_id as structured data
