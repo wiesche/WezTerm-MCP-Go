@@ -365,13 +365,19 @@ func sendTextHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToo
 
 		if showHint {
 			manualModeState.firstCallDone = true
-			result["manual_mode_hint"] = "Configuration set for user to execute sent commands manually. Set 'manual_command_execution: false' in config.yaml to disable."
 			if len(filteredChars) > 0 {
+				warnings = append(warnings, "Manual mode: Return characters were replaced. Set 'manual_command_execution: false' in config.yaml to disable.")
 				result["filtered_characters"] = filteredChars
+			} else {
+				warnings = append(warnings, "Manual mode: User must press Enter to execute. Set 'manual_command_execution: false' in config.yaml to disable.")
 			}
 		}
 	} else if !newline {
 		result["message"] = fmt.Sprintf("Text sent to pane %d (no newline — user must press Enter to execute)", paneID)
+	}
+
+	if len(warnings) > 0 {
+		result["warnings"] = warnings
 	}
 
 	resultJSON, _ := json.MarshalIndent(result, "", "  ")
