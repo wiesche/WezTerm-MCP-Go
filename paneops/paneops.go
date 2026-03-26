@@ -121,27 +121,50 @@ func SendTextToPane(paneID int, text string) error {
 }
 
 // SendTextWithNewline sends text to a pane with appropriate newline for shell type.
+// Sends text via --no-paste, then End key, then Enter - all as separate calls.
 func SendTextWithNewline(paneID int, text string, shellType string) error {
 	profile := GetShellProfile(shellType)
-	fullText := text + profile.Enter
+	paneArg := strconv.Itoa(paneID)
 
 	ctx, cancel := context.WithTimeout(context.Background(), defaultTimeout)
 	defer cancel()
 
-	cliArgs := []string{"cli", "send-text", "--pane-id", strconv.Itoa(paneID)}
-	_, _, err := runWeztermStdin(ctx, []byte(fullText), cliArgs...)
+	// 1. Send the text without newline (--no-paste to send raw)
+	if _, _, err := runWeztermStdin(ctx, []byte(text),
+		"cli", "send-text", "--no-paste", "--pane-id", paneArg); err != nil {
+		return err
+	}
+
+	// 2. Send End key to move cursor to end of line
+	if _, _, err := runWeztermStdin(ctx, []byte("\x1b[F"),
+		"cli", "send-text", "--no-paste", "--pane-id", paneArg); err != nil {
+		return err
+	}
+
+	// 3. Send Enter
+	_, _, err := runWeztermStdin(ctx, []byte(profile.Enter),
+		"cli", "send-text", "--no-paste", "--pane-id", paneArg)
 	return err
 }
 
 // SendEnterToPane sends the enter sequence for a shell type.
+// Sends End key to move cursor to end of line, then Enter - as separate calls.
 func SendEnterToPane(paneID int, shellType string) error {
 	profile := GetShellProfile(shellType)
+	paneArg := strconv.Itoa(paneID)
 
 	ctx, cancel := context.WithTimeout(context.Background(), defaultTimeout)
 	defer cancel()
 
-	cliArgs := []string{"cli", "send-text", "--pane-id", strconv.Itoa(paneID)}
-	_, _, err := runWeztermStdin(ctx, []byte(profile.Enter), cliArgs...)
+	// 1. Send End key to move cursor to end of line
+	if _, _, err := runWeztermStdin(ctx, []byte("\x1b[F"),
+		"cli", "send-text", "--no-paste", "--pane-id", paneArg); err != nil {
+		return err
+	}
+
+	// 2. Send Enter
+	_, _, err := runWeztermStdin(ctx, []byte(profile.Enter),
+		"cli", "send-text", "--no-paste", "--pane-id", paneArg)
 	return err
 }
 

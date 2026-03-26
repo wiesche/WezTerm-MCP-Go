@@ -43,10 +43,10 @@ func DefaultConfig() *Config {
 			Edit:    "P",
 		},
 		ShellProfiles: map[string]ShellProfile{
-			"powershell": {ClearLine: "\x1b", Enter: "\r\n"},
-			"cmd":        {ClearLine: "\x15", Enter: "\r\n"},
-			"bash":       {ClearLine: "\x15", Enter: "\n"},
-			"wsl":        {ClearLine: "\x15", Enter: "\n"},
+			"powershell": {ClearLine: "\x1b", Enter: "\r"},
+			"cmd":        {ClearLine: "\x15", Enter: "\r"},
+			"bash":       {ClearLine: "\x1b[F\x15", Enter: "\r"},
+			"wsl":        {ClearLine: "\x1b[F\x15", Enter: "\r"},
 		},
 	}
 }

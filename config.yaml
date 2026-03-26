@@ -10,7 +10,7 @@ manual_command_execution: false
 # When true, shows a GUI approval dialog for every send_text tool call.
 # The user must approve, reject, or edit+approve each command before it executes.
 # Requires wezterm-approval-popup.exe alongside this server.
-user_approval: false
+user_approval: true
 
 # When true, minimizes the approval dialog after each approve or reject action.
 minimize_after_action: false
@@ -27,13 +27,13 @@ shortcuts:
 shell_profiles:
   powershell:
     clear_line: "\x1b"    # ESC clears the line in PowerShell
-    enter: "\r\n"
+    enter: "\r"
   cmd:
     clear_line: "\x15"    # Ctrl+U clears the line in cmd.exe
-    enter: "\r\n"
+    enter: "\r"
   bash:
-    clear_line: "\x15"    # Ctrl+U clears the line in bash
-    enter: "\n"
+    clear_line: "\x1b[F\x15"    # End key + Ctrl+U clears the entire line in bash
+    enter: "\r"
   wsl:
-    clear_line: "\x15"    # Ctrl+U clears the line in WSL
-    enter: "\n"
+    clear_line: "\x1b[F\x15"    # End key + Ctrl+U clears the entire line in WSL
+    enter: "\r"
