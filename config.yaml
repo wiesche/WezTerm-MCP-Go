@@ -6,3 +6,34 @@
 # Filtered characters are replaced with literal " \r " or " \n " (space-padded)
 # unless at the end of the line.
 manual_command_execution: false
+
+# When true, shows a GUI approval dialog for every send_text tool call.
+# The user must approve, reject, or edit+approve each command before it executes.
+# Requires wezterm-approval-popup.exe alongside this server.
+user_approval: false
+
+# When true, minimizes the approval dialog after each approve or reject action.
+minimize_after_action: false
+
+# Keyboard shortcuts for the approval dialog (while the dialog has focus).
+shortcuts:
+  approve: "Y"
+  reject: "N"
+  edit: "P"
+
+# Shell-specific sequences used for clear-line and enter in approval edit mode.
+# Keys are matched against the pane title (case-insensitive).
+# Default for unknown shells: enter="\n", clear_line="" (none).
+shell_profiles:
+  powershell:
+    clear_line: "\x1b"    # ESC clears the line in PowerShell
+    enter: "\r\n"
+  cmd:
+    clear_line: "\x15"    # Ctrl+U clears the line in cmd.exe
+    enter: "\r\n"
+  bash:
+    clear_line: "\x15"    # Ctrl+U clears the line in bash
+    enter: "\n"
+  wsl:
+    clear_line: "\x15"    # Ctrl+U clears the line in WSL
+    enter: "\n"

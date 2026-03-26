@@ -11,13 +11,43 @@ import (
 
 // Config holds server configuration.
 type Config struct {
-	ManualCommandExecution bool `yaml:"manual_command_execution"`
+	ManualCommandExecution bool                    `yaml:"manual_command_execution"`
+	UserApproval           bool                    `yaml:"user_approval"`
+	MinimizeAfterAction    bool                    `yaml:"minimize_after_action"`
+	Shortcuts              Shortcuts               `yaml:"shortcuts"`
+	ShellProfiles          map[string]ShellProfile `yaml:"shell_profiles"`
+}
+
+// Shortcuts contains keyboard shortcuts for the approval dialog.
+type Shortcuts struct {
+	Approve string `yaml:"approve"`
+	Reject  string `yaml:"reject"`
+	Edit    string `yaml:"edit"`
+}
+
+// ShellProfile contains shell-specific sequences for approval GUI.
+type ShellProfile struct {
+	ClearLine string `yaml:"clear_line"`
+	Enter     string `yaml:"enter"`
 }
 
 // DefaultConfig returns the default configuration.
 func DefaultConfig() *Config {
 	return &Config{
 		ManualCommandExecution: false,
+		UserApproval:           false,
+		MinimizeAfterAction:    false,
+		Shortcuts: Shortcuts{
+			Approve: "Y",
+			Reject:  "N",
+			Edit:    "P",
+		},
+		ShellProfiles: map[string]ShellProfile{
+			"powershell": {ClearLine: "\x1b", Enter: "\r\n"},
+			"cmd":        {ClearLine: "\x15", Enter: "\r\n"},
+			"bash":       {ClearLine: "\x15", Enter: "\n"},
+			"wsl":        {ClearLine: "\x15", Enter: "\n"},
+		},
 	}
 }
 

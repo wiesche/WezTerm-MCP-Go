@@ -1,11 +1,16 @@
 package wezterm
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 	"wezterm-mcp-go/config"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -71,6 +76,42 @@ var controlBytes = map[string][]byte{
 	"u": {0x15},
 	"w": {0x17},
 	"z": {0x1a},
+}
+
+// findPopupExe looks for wezterm-approval-popup.exe next to the server executable.
+func findPopupExe() string {
+	execPath, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	popupPath := filepath.Join(filepath.Dir(execPath), "wezterm-approval-popup.exe")
+	if _, err := os.Stat(popupPath); err == nil {
+		return popupPath
+	}
+	return ""
+}
+
+// runPopupExe executes the popup executable and returns its stdout and exit code.
+func runPopupExe(popupPath, text string, paneID int) (string, int, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, popupPath, text, strconv.Itoa(paneID))
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	exitCode := 0
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			exitCode = exitErr.ExitCode()
+		} else {
+			exitCode = 1
+		}
+	}
+
+	return stdout.String(), exitCode, err
 }
 
 // filterExecutionChars removes carriage return, newline, and line feed characters
@@ -320,6 +361,23 @@ func sendTextHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToo
 				paneInfoCache[pane.PaneID] = pane
 			}
 		}
+	}
+
+	// User approval popup (if enabled)
+	if config.Active != nil && config.Active.UserApproval {
+		popupPath := findPopupExe()
+		if popupPath != "" {
+			// Call popup executable blocking
+			popupOut, exitCode, err := runPopupExe(popupPath, text, paneID)
+			if err != nil || exitCode != 0 {
+				// Popup crashed or rejected
+				return mcp.NewToolResultError("Rejected by user"), nil
+			}
+			// Return popup's JSON directly
+			return mcp.NewToolResultText(popupOut), nil
+		}
+		// Popup not found - fall through with warning
+		warnings = append(warnings, "user_approval enabled but wezterm-approval-popup.exe not found; executing normally")
 	}
 
 	// Apply newline if requested (before filtering, so it gets filtered in manual mode)
