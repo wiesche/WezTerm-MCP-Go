@@ -37,3 +37,20 @@ shell_profiles:
   wsl:
     clear_line: "\x1b[F\x15"    # End key + Ctrl+U clears the entire line in WSL
     enter: "\r"
+
+# Output capture settings for send_text responses.
+# When response_wait_ms > 0 or user_approval is true, captures new output
+# after command execution and returns it in the response.
+
+# Milliseconds to wait after send_text before reading output buffer.
+# Set to 0 to disable output capture (default).
+response_wait_ms: 0
+
+# Maximum new lines to include in output_snapshot response.
+max_new_lines_returned: 50
+
+# Lines of pre-command buffer used as anchor for diff matching.
+reference_text_window: 20
+
+# Maximum characters per line to compare (handles extremely long lines).
+line_compare_max_chars: 500

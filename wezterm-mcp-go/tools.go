@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 	"wezterm-mcp-go/config"
+	"wezterm-mcp-go/paneops"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -373,11 +374,23 @@ func sendTextHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToo
 				// Popup crashed or rejected
 				return mcp.NewToolResultError("Rejected by user"), nil
 			}
-			// Return popup's JSON directly
+			// Return popup's JSON directly (includes output_snapshot if captured)
 			return mcp.NewToolResultText(popupOut), nil
 		}
 		// Popup not found - fall through with warning
 		warnings = append(warnings, "user_approval enabled but wezterm-approval-popup.exe not found; executing normally")
+	}
+
+	// Determine if we should capture output
+	shouldCapture := config.Active != nil &&
+		config.Active.ResponseWaitMs > 0 &&
+		!config.Active.ManualCommandExecution
+
+	var refLines []string
+
+	// Take reference snapshot before sending text (if capturing output)
+	if shouldCapture {
+		refLines, _ = paneops.TakeSnapshot(paneID, config.Active.ReferenceTextWindow)
 	}
 
 	// Apply newline if requested (before filtering, so it gets filtered in manual mode)
@@ -412,6 +425,22 @@ func sendTextHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToo
 	}
 	if len(warnings) > 0 {
 		result["warnings"] = warnings
+	}
+
+	// Capture output after command (if enabled)
+	if shouldCapture && refLines != nil {
+		newLines, elapsed, _, err := paneops.CaptureOutput(
+			paneID, refLines,
+			config.Active.ResponseWaitMs,
+			config.Active.MaxNewLinesReturned,
+			config.Active.ReferenceTextWindow,
+			config.Active.LineCompareMaxChars,
+		)
+		if err == nil && len(newLines) > 0 {
+			outputSnapshot, _ := paneops.FormatOutputSnapshot(newLines, config.Active.MaxNewLinesReturned)
+			result["output_snapshot"] = outputSnapshot
+			result["time_elapsed_ms"] = elapsed.Milliseconds()
+		}
 	}
 
 	// Determine if we should show the manual mode hint

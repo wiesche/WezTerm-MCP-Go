@@ -22,6 +22,8 @@ type ApprovalResult struct {
 	AutoSelected   bool   `json:"auto_selected"`
 	Message        string `json:"message"`
 	ApprovedByUser bool   `json:"approved_by_user"`
+	OutputSnapshot string `json:"output_snapshot,omitempty"`
+	TimeElapsedMs  int64  `json:"time_elapsed_ms,omitempty"`
 }
 
 // RejectionResult is returned when user rejects.
@@ -108,17 +110,51 @@ func runApprovalGUI(text string, paneID int, shellType, paneTitle string) interf
 
 	// Set button callbacks
 	approveBtn.OnTapped = func() {
+		// Take reference snapshot before sending (for output capture)
+		var refLines []string
+		shouldCapture := config.Active != nil &&
+			(config.Active.ResponseWaitMs > 0 || config.Active.UserApproval) &&
+			!config.Active.ManualCommandExecution
+
+		if shouldCapture {
+			refLines, _ = paneops.TakeSnapshot(paneID, config.Active.ReferenceTextWindow)
+		}
+
 		if edited {
 			paneops.SendEnterToPane(paneID, shellType)
 		} else {
 			paneops.SendTextWithNewline(paneID, text, shellType)
 		}
-		finalResult = ApprovalResult{
+
+		result := ApprovalResult{
 			PaneID:         paneID,
 			AutoSelected:   false,
 			Message:        fmt.Sprintf("Text sent to pane %d", paneID),
 			ApprovedByUser: true,
 		}
+
+		// Capture output if enabled
+		if shouldCapture && refLines != nil {
+			waitMs := config.Active.ResponseWaitMs
+			if waitMs == 0 {
+				waitMs = 100 // Default wait when user_approval but no explicit wait
+			}
+
+			newLines, elapsed, _, err := paneops.CaptureOutput(
+				paneID, refLines,
+				waitMs,
+				config.Active.MaxNewLinesReturned,
+				config.Active.ReferenceTextWindow,
+				config.Active.LineCompareMaxChars,
+			)
+			if err == nil && len(newLines) > 0 {
+				outputSnapshot, _ := paneops.FormatOutputSnapshot(newLines, config.Active.MaxNewLinesReturned)
+				result.OutputSnapshot = outputSnapshot
+				result.TimeElapsedMs = elapsed.Milliseconds()
+			}
+		}
+
+		finalResult = result
 		a.Quit()
 	}
 

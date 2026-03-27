@@ -16,6 +16,10 @@ type Config struct {
 	MinimizeAfterAction    bool                    `yaml:"minimize_after_action"`
 	Shortcuts              Shortcuts               `yaml:"shortcuts"`
 	ShellProfiles          map[string]ShellProfile `yaml:"shell_profiles"`
+	ResponseWaitMs         int                     `yaml:"response_wait_ms"`
+	MaxNewLinesReturned    int                     `yaml:"max_new_lines_returned"`
+	ReferenceTextWindow    int                     `yaml:"reference_text_window"`
+	LineCompareMaxChars    int                     `yaml:"line_compare_max_chars"`
 }
 
 // Shortcuts contains keyboard shortcuts for the approval dialog.
@@ -48,6 +52,10 @@ func DefaultConfig() *Config {
 			"bash":       {ClearLine: "\x1b[F\x15", Enter: "\r"},
 			"wsl":        {ClearLine: "\x1b[F\x15", Enter: "\r"},
 		},
+		ResponseWaitMs:      0,
+		MaxNewLinesReturned: 50,
+		ReferenceTextWindow: 20,
+		LineCompareMaxChars: 500,
 	}
 }
 
