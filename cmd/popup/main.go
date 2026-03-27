@@ -16,14 +16,11 @@ import (
 	"fyne.io/fyne/v2/widget"
 )
 
-// ApprovalResult is the JSON response returned to the MCP server.
+// ApprovalResult is the minimal JSON returned to the MCP server on approve.
+// Output capture and diff is handled by the server after popup exits.
 type ApprovalResult struct {
-	PaneID         int    `json:"pane_id"`
-	AutoSelected   bool   `json:"auto_selected"`
-	Message        string `json:"message"`
-	ApprovedByUser bool   `json:"approved_by_user"`
-	OutputSnapshot string `json:"output_snapshot,omitempty"`
-	TimeElapsedMs  int64  `json:"time_elapsed_ms,omitempty"`
+	PaneID         int  `json:"pane_id"`
+	ApprovedByUser bool `json:"approved_by_user"`
 }
 
 // RejectionResult is returned when user rejects.
@@ -32,7 +29,6 @@ type RejectionResult struct {
 }
 
 func main() {
-	// Load config (same directory as popup exe)
 	if err := config.Init(); err != nil {
 		fmt.Fprintf(os.Stderr, "config error: %v\n", err)
 		os.Exit(2)
@@ -68,10 +64,10 @@ func main() {
 
 	shellType := paneops.DetectShellType(paneTitle)
 
-	// Run GUI and get result
-	result := runApprovalGUI(text, paneID, shellType, paneTitle)
+	// Run GUI - blocks until user approves or rejects
+	result := runApprovalGUI(text, paneID, shellType)
 
-	// Output JSON to stdout
+	// Output minimal JSON to stdout (server handles output capture)
 	output, err := json.MarshalIndent(result, "", "  ")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to marshal result: %v\n", err)
@@ -85,7 +81,7 @@ func main() {
 	}
 }
 
-func runApprovalGUI(text string, paneID int, shellType, paneTitle string) interface{} {
+func runApprovalGUI(text string, paneID int, shellType string) interface{} {
 	a := app.New()
 	w := a.NewWindow("MCP Approval")
 	w.Resize(fyne.NewSize(500, 250))
@@ -100,61 +96,21 @@ func runApprovalGUI(text string, paneID int, shellType, paneTitle string) interf
 
 	edited := false
 
-	// Store result from button callbacks
 	var finalResult interface{}
 
-	// Buttons (callbacks set below)
 	approveBtn := widget.NewButton(fmt.Sprintf("Approve [%s]", config.Active.Shortcuts.Approve), nil)
 	editBtn := widget.NewButton(fmt.Sprintf("Show+Edit [%s]", config.Active.Shortcuts.Edit), nil)
 	rejectBtn := widget.NewButton(fmt.Sprintf("Reject [%s]", config.Active.Shortcuts.Reject), nil)
 
-	// Set button callbacks
 	approveBtn.OnTapped = func() {
-		// Take reference snapshot before sending (for output capture)
-		var refLines []string
-		shouldCapture := config.Active != nil &&
-			(config.Active.ResponseWaitMs > 0 || config.Active.UserApproval) &&
-			!config.Active.ManualCommandExecution
-
-		if shouldCapture {
-			refLines, _ = paneops.TakeSnapshot(paneID, config.Active.ReferenceTextWindow)
-		}
-
 		if edited {
+			// Text already staged in terminal - just send Enter
 			paneops.SendEnterToPane(paneID, shellType)
 		} else {
+			// Send text with newline
 			paneops.SendTextWithNewline(paneID, text, shellType)
 		}
-
-		result := ApprovalResult{
-			PaneID:         paneID,
-			AutoSelected:   false,
-			Message:        fmt.Sprintf("Text sent to pane %d", paneID),
-			ApprovedByUser: true,
-		}
-
-		// Capture output if enabled
-		if shouldCapture && refLines != nil {
-			waitMs := config.Active.ResponseWaitMs
-			if waitMs == 0 {
-				waitMs = 100 // Default wait when user_approval but no explicit wait
-			}
-
-			newLines, elapsed, _, err := paneops.CaptureOutput(
-				paneID, refLines,
-				waitMs,
-				config.Active.MaxNewLinesReturned,
-				config.Active.ReferenceTextWindow,
-				config.Active.LineCompareMaxChars,
-			)
-			if err == nil && len(newLines) > 0 {
-				outputSnapshot, _ := paneops.FormatOutputSnapshot(newLines, config.Active.MaxNewLinesReturned)
-				result.OutputSnapshot = outputSnapshot
-				result.TimeElapsedMs = elapsed.Milliseconds()
-			}
-		}
-
-		finalResult = result
+		finalResult = ApprovalResult{PaneID: paneID, ApprovedByUser: true}
 		a.Quit()
 	}
 
@@ -162,11 +118,13 @@ func runApprovalGUI(text string, paneID int, shellType, paneTitle string) interf
 		edited = true
 		paneops.FocusWezTermWindow()
 		paneops.ActivatePane(paneID)
+		// Stage text in terminal without executing - user edits then presses Approve
 		paneops.SendTextToPane(paneID, text)
 	}
 
 	rejectBtn.OnTapped = func() {
 		if edited {
+			// Clear staged text
 			paneops.ClearLineInPane(paneID, shellType)
 		}
 		finalResult = RejectionResult{Error: "Rejected by user"}
@@ -177,25 +135,18 @@ func runApprovalGUI(text string, paneID int, shellType, paneTitle string) interf
 	w.Canvas().AddShortcut(&desktop.CustomShortcut{
 		KeyName:  fyne.KeyName(config.Active.Shortcuts.Approve),
 		Modifier: 0,
-	}, func(_ fyne.Shortcut) {
-		approveBtn.OnTapped()
-	})
+	}, func(_ fyne.Shortcut) { approveBtn.OnTapped() })
 
 	w.Canvas().AddShortcut(&desktop.CustomShortcut{
 		KeyName:  fyne.KeyName(config.Active.Shortcuts.Reject),
 		Modifier: 0,
-	}, func(_ fyne.Shortcut) {
-		rejectBtn.OnTapped()
-	})
+	}, func(_ fyne.Shortcut) { rejectBtn.OnTapped() })
 
 	w.Canvas().AddShortcut(&desktop.CustomShortcut{
 		KeyName:  fyne.KeyName(config.Active.Shortcuts.Edit),
 		Modifier: 0,
-	}, func(_ fyne.Shortcut) {
-		editBtn.OnTapped()
-	})
+	}, func(_ fyne.Shortcut) { editBtn.OnTapped() })
 
-	// Layout
 	content := container.NewVBox(
 		infoLabel,
 		widget.NewSeparator(),
@@ -205,11 +156,8 @@ func runApprovalGUI(text string, paneID int, shellType, paneTitle string) interf
 	)
 
 	w.SetContent(content)
-
-	// Run blocking on main thread
 	w.ShowAndRun()
 
-	// Return the stored result
 	if finalResult != nil {
 		return finalResult
 	}
