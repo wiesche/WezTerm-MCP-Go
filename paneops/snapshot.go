@@ -3,6 +3,7 @@ package paneops
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -93,8 +94,15 @@ func WaitAndSnapshot(paneID int, waitMs int, fetchLines int, startTime time.Time
 // CaptureOutput captures new output after a command execution.
 // Takes a reference snapshot before the command, then compares with post-command snapshot.
 // Returns new lines, elapsed time, and whether anchor was found.
-func CaptureOutput(paneID int, refLines []string, waitMs int, maxNewLines, refWindow, maxChars int) ([]string, time.Duration, bool, error) {
+func CaptureOutput(paneID int, refLines []string, waitMs int, maxNewLines, refWindow, maxChars int) (newOutput []string, elapsed time.Duration, anchorFound bool, err error) {
 	startTime := time.Now()
+
+	// Recover from panics in FindNewLines to avoid crashing the MCP server
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("FindNewLines panic: %v", r)
+		}
+	}()
 
 	// Fetch post-command buffer (need enough lines for matching + new output)
 	fetchLines := maxNewLines + refWindow + 10 // extra buffer
@@ -103,20 +111,23 @@ func CaptureOutput(paneID int, refLines []string, waitMs int, maxNewLines, refWi
 		return nil, elapsed, false, err
 	}
 
-	// Find new lines since reference
-	newOutput, anchorFound := textdiff.FindNewLines(refLines, newLines, maxChars)
+	// Find new lines since reference (pass paneID for hint generation)
+	newOutput, anchorFound = textdiff.FindNewLines(refLines, newLines, maxChars, paneID)
 
 	return newOutput, elapsed, anchorFound, nil
 }
 
 // FormatOutputSnapshot formats the output snapshot for JSON response.
-// Handles truncation and adds hint if needed.
 func FormatOutputSnapshot(newLines []string, maxLines int) (string, int) {
 	if len(newLines) == 0 {
 		return "", 0
 	}
 
-	return textdiff.TruncateWithHint(newLines, maxLines)
+	// Truncate if exceeds maxLines (hint is already in first line from FindNewLines if no anchor)
+	if len(newLines) > maxLines {
+		return textdiff.JoinLines(newLines[:maxLines]), len(newLines) - maxLines
+	}
+	return textdiff.JoinLines(newLines), 0
 }
 
 // ShouldCaptureOutput determines if output capture should happen based on config and mode.
