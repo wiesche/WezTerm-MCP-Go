@@ -302,6 +302,7 @@ func registerSendText(s *server.MCPServer) {
 		mcp.WithString("text", mcp.Required(), mcp.Description("Text or command to send to the terminal")),
 		mcp.WithNumber("pane_id", mcp.Description("Target pane ID. Omit to use the currently active pane. If specified, this pane becomes active.")),
 		mcp.WithBoolean("newline", mcp.Description("Append newline to execute immediately (default: true)")),
+		mcp.WithNumber("wait_time_ms", mcp.Description("Waiting time for command execution. Resulting lines since are added in the response. Overrides response_wait_ms setting in config")),
 	)
 	s.AddTool(tool, sendTextHandler)
 }
@@ -313,6 +314,7 @@ func sendTextHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToo
 	}
 	explicitPaneID := mcp.ParseInt(req, "pane_id", -1)
 	newline := mcp.ParseBoolean(req, "newline", true)
+	waitTimeMs := mcp.ParseInt(req, "wait_time_ms", -1) // -1 means use config default
 
 	ctx, cancel := withTimeout(ctx)
 	defer cancel()
@@ -364,9 +366,15 @@ func sendTextHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToo
 		}
 	}
 
-	// Determine if we should capture output (user_approval OR response_wait_ms > 0, not in manual mode)
+	// Determine effective wait time: override from parameter, else config default
+	effectiveWaitMs := config.Active.ResponseWaitMs
+	if waitTimeMs >= 0 {
+		effectiveWaitMs = waitTimeMs // Override from parameter
+	}
+
+	// Determine if we should capture output (user_approval OR effective_wait_ms > 0, not in manual mode)
 	shouldCapture := config.Active != nil &&
-		(config.Active.UserApproval || config.Active.ResponseWaitMs > 0) &&
+		(config.Active.UserApproval || effectiveWaitMs > 0) &&
 		!config.Active.ManualCommandExecution
 
 	var refLines []string
@@ -389,9 +397,9 @@ func sendTextHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToo
 
 			// Popup approved - now capture output on the server side
 			// The command has already been sent by popup; wait then diff
-			waitMs := config.Active.ResponseWaitMs
+			waitMs := effectiveWaitMs
 			if waitMs == 0 {
-				waitMs = 500
+				waitMs = 500 // Default when user_approval but no explicit wait
 			}
 
 			result := map[string]interface{}{}
@@ -409,7 +417,7 @@ func sendTextHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToo
 			if shouldCapture && refLines != nil {
 				newLines, elapsed, _, captureErr := paneops.CaptureOutput(
 					paneID, refLines,
-					waitMs,
+					waitMs, // Use the effective wait (already includes override)
 					config.Active.MaxNewLinesReturned,
 					config.Active.ReferenceTextWindow,
 					config.Active.LineCompareMaxChars,
@@ -462,11 +470,11 @@ func sendTextHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToo
 		result["warnings"] = warnings
 	}
 
-	// Capture output after command (non-popup path, response_wait_ms > 0)
+	// Capture output after command (non-popup path, effective_wait_ms > 0)
 	if shouldCapture && refLines != nil && !config.Active.UserApproval {
 		newLines, elapsed, _, captureErr := paneops.CaptureOutput(
 			paneID, refLines,
-			config.Active.ResponseWaitMs,
+			effectiveWaitMs,
 			config.Active.MaxNewLinesReturned,
 			config.Active.ReferenceTextWindow,
 			config.Active.LineCompareMaxChars,
