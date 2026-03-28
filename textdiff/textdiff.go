@@ -1,15 +1,16 @@
 package textdiff
 
 import (
+	"fmt"
 	"strings"
 )
 
 // FindNewLines finds new lines in newBuf that appeared after the content in refLines.
-// Both slices are fixed-position terminal snapshots: line[i] in refLines corresponds
-// to line[i] in newBuf (same row offset from top of the fetched window).
-// Walks forward positionally until the first line that differs — everything from
-// that position onward in newBuf is considered new output.
-// Returns the new lines and whether any positional anchor (shared prefix) was found.
+// Uses bottom-to-top comparison: searches for the longest suffix of refLines that matches
+// a contiguous block in newBuf, starting from the end and working backwards.
+// This is efficient when refLines is smaller than newBuf (common case: ref is 20 lines,
+// newBuf may have 50+ lines of new output).
+// Returns the new lines and whether an anchor was found.
 func FindNewLines(refLines, newBuf []string, maxChars int) ([]string, bool) {
 	if len(refLines) == 0 {
 		// No reference - return all of newBuf as new
@@ -19,42 +20,48 @@ func FindNewLines(refLines, newBuf []string, maxChars int) ([]string, bool) {
 		return nil, true
 	}
 
-	limit := len(refLines)
-	if len(newBuf) < limit {
-		limit = len(newBuf)
-	}
+	refLen := len(refLines)
+	newLen := len(newBuf)
 
-	// Walk forward: find the first position where the two buffers diverge.
-	divergeAt := -1
-	for i := 0; i < limit; i++ {
-		ref := refLines[i]
-		cur := newBuf[i]
+	// Helper to compare two lines with maxChars truncation
+	linesEqual := func(a, b string) bool {
 		if maxChars > 0 {
-			if len(ref) > maxChars {
-				ref = ref[:maxChars]
+			if len(a) > maxChars {
+				a = a[:maxChars]
 			}
-			if len(cur) > maxChars {
-				cur = cur[:maxChars]
+			if len(b) > maxChars {
+				b = b[:maxChars]
 			}
 		}
-		if ref != cur {
-			divergeAt = i
-			break
+		return a == b
+	}
+	// Match the lines in newBuf against the lines in refLines by searching for the last line in refLines in newBuf in reverse order
+
+	for running_index := newLen - 1; running_index >= 0; running_index-- {
+		// loop for matching the whole reflines buffer ffrom back to fromt
+		//for reverse_ref_index := len(refLines)-1; reverse_ref_index >0; reverse_ref_index-- {
+		reverse_ref_index := refLen - 2 // Count over from line above the matching as the last line might have changed by the user input. Resets matching.
+		for temp_running_index := running_index; temp_running_index >= 0; temp_running_index-- {
+			line := newBuf[temp_running_index]
+			matchline := refLines[reverse_ref_index]
+			if !linesEqual(line, matchline) {
+				break
+			}
+
+			// if reverse_ref_index < 0 { // Case: the entire reference matched -> all text after the running_index + len(refLines) is new
+			// 	return newBuf[temp_running_index+len(refLines)-1:], true
+			// }
+			if temp_running_index == 0 || reverse_ref_index == 0 { //Case: if  reverse_ref_index > 0, the reference window partially overlaps with the end of the new buffer. All text after ref_index is new
+				return newBuf[temp_running_index+refLen-reverse_ref_index-1:], true
+			}
+			reverse_ref_index--
 		}
+		//Case: all of the new buffer is new and gets returned, the old reference buffer got pushed out of the matching window. Insert a hint to retreive above text using Wezterm in place of the first line of the new buffer in that case.
+
 	}
 
-	if divergeAt == -1 {
-		// refLines is a prefix of newBuf with no divergence within the compared range.
-		// New content starts after the last compared line.
-		newStart := limit
-		if newStart >= len(newBuf) {
-			return nil, true // Nothing new
-		}
-		return newBuf[newStart:], true
-	}
-
-	// Return everything from the first diverging line onward.
-	return newBuf[divergeAt:], true
+	// No anchor found - buffer changed completely
+	return newBuf, false
 }
 
 // SplitLines splits text into lines, preserving empty lines.
@@ -80,18 +87,19 @@ func JoinLines(lines []string) string {
 }
 
 // TruncateWithHint truncates lines to maxLines and adds a hint for remaining content.
+// The hint appears at the BEGINNING of the output with the actual line number to use.
 // Returns the truncated lines joined as a string, and the number of lines truncated.
 func TruncateWithHint(lines []string, maxLines int) (string, int) {
 	if len(lines) <= maxLines {
 		return JoinLines(lines), 0
 	}
 
-	truncated := lines[:maxLines]
 	truncatedCount := len(lines) - maxLines
 
-	// Add hint at the end
-	result := JoinLines(truncated)
-	result += "\n\n... <more lines before, use 'wezterm cli get-text --start-line X --end-line Y' where X,Y are negative line numbers above the visible buffer to read remaining output>"
+	// The hint shows how to read the truncated lines above the visible output.
+	// Y = -maxLines means "maxLines lines above the visible buffer start"
+	hint := fmt.Sprintf("...<%d more lines above. Use 'wezterm cli get-text --start-line %d --end-line -1'>\n\n", truncatedCount, -truncatedCount)
 
+	result := hint + JoinLines(lines[:maxLines])
 	return result, truncatedCount
 }

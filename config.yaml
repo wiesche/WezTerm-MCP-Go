@@ -10,7 +10,7 @@ manual_command_execution: false
 # When true, shows a GUI approval dialog for every send_text tool call.
 # The user must approve, reject, or edit+approve each command before it executes.
 # Requires wezterm-approval-popup.exe alongside this server.
-user_approval: true
+user_approval: false
 
 # When true, minimizes the approval dialog after each approve or reject action.
 minimize_after_action: false
@@ -44,7 +44,7 @@ shell_profiles:
 
 # Milliseconds to wait after send_text before reading output buffer.
 # Set to 0 to disable output capture (default).
-response_wait_ms: 0
+response_wait_ms: 300
 
 # Maximum new lines to include in output_snapshot response.
 max_new_lines_returned: 50

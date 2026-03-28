@@ -2,20 +2,70 @@ package paneops
 
 import (
 	"context"
+	"encoding/json"
 	"strconv"
 	"strings"
 	"time"
 	"wezterm-mcp-go/textdiff"
 )
 
-// TakeSnapshot fetches N lines from a pane and returns them as a slice.
+// paneSize holds the size info from wezterm cli list output.
+type paneSize struct {
+	Rows int `json:"rows"`
+}
+
+// paneListEntry represents a pane entry from wezterm cli list --format json.
+type paneListEntry struct {
+	PaneID int      `json:"pane_id"`
+	Size   paneSize `json:"size"`
+}
+
+// getPaneRows fetches the visible row count for a pane.
+func getPaneRows(ctx context.Context, paneID int) (int, error) {
+	stdout, _, err := runWezterm(ctx, "cli", "list", "--format", "json")
+	if err != nil {
+		return 0, err
+	}
+
+	var panes []paneListEntry
+	if err := json.Unmarshal([]byte(stdout), &panes); err != nil {
+		return 0, err
+	}
+
+	for _, p := range panes {
+		if p.PaneID == paneID {
+			return p.Size.Rows, nil
+		}
+	}
+
+	return 24, nil // Default fallback
+}
+
+// TakeSnapshot fetches the last N visible lines from a pane and returns them as a slice.
+// Uses --start-line to specify the starting line relative to the visible screen:
+//   - 0 = top of visible screen
+//   - Positive N = Nth line from top of visible screen
+//   - Negative N = N lines into scrollback (above visible)
+//
+// To get the last N visible lines, we calculate: start-line = max(0, rows-N)
 func TakeSnapshot(paneID, lines int) ([]string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), defaultTimeout)
 	defer cancel()
 
 	cliArgs := []string{"cli", "get-text", "--pane-id", strconv.Itoa(paneID)}
+
 	if lines > 0 {
-		cliArgs = append(cliArgs, "--start-line", strconv.Itoa(-lines))
+		// Get the pane's visible row count
+		rows, err := getPaneRows(ctx, paneID)
+		if err != nil {
+			rows = 24 // Fallback to default terminal height
+		}
+
+		// Calculate start line to get the last N visible lines
+		// If lines <= rows: start from (rows - lines) within visible screen (positive value)
+		// If lines > rows: need to go into scrollback (negative value)
+		startLine := rows - lines
+		cliArgs = append(cliArgs, "--start-line", strconv.Itoa(startLine))
 	}
 
 	stdout, _, err := runWezterm(ctx, cliArgs...)
