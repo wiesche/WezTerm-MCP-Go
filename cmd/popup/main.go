@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"time"
 
 	"wezterm-mcp-go/config"
 	"wezterm-mcp-go/paneops"
@@ -19,8 +20,9 @@ import (
 // ApprovalResult is the minimal JSON returned to the MCP server on approve.
 // Output capture and diff is handled by the server after popup exits.
 type ApprovalResult struct {
-	PaneID         int  `json:"pane_id"`
-	ApprovedByUser bool `json:"approved_by_user"`
+	PaneID         int   `json:"pane_id"`
+	ApprovedByUser bool  `json:"approved_by_user"`
+	TimeElapsedMs  int64 `json:"time_elapsed_ms,omitempty"`
 }
 
 // RejectionResult is returned when user rejects.
@@ -34,9 +36,9 @@ func main() {
 		os.Exit(2)
 	}
 
-	// Parse CLI args: popup <text> <pane_id>
+	// Parse CLI args: popup <text> <pane_id> [wait_ms]
 	if len(os.Args) < 3 {
-		fmt.Fprintf(os.Stderr, "Usage: %s <text> <pane_id>\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "Usage: %s <text> <pane_id> [wait_ms]\n", os.Args[0])
 		os.Exit(2)
 	}
 
@@ -45,6 +47,12 @@ func main() {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Invalid pane_id: %v\n", err)
 		os.Exit(2)
+	}
+
+	// Optional wait_ms parameter
+	waitMs := 0
+	if len(os.Args) >= 4 {
+		waitMs, _ = strconv.Atoi(os.Args[3])
 	}
 
 	// Fetch pane info to detect shell type
@@ -64,8 +72,8 @@ func main() {
 
 	shellType := paneops.DetectShellType(paneTitle)
 
-	// Run GUI - blocks until user approves or rejects
-	result := runApprovalGUI(text, paneID, shellType)
+	// Run GUI - blocks until user approves or rejects (and wait countdown completes)
+	result := runApprovalGUI(text, paneID, shellType, waitMs)
 
 	// Output minimal JSON to stdout (server handles output capture)
 	output, err := json.MarshalIndent(result, "", "  ")
@@ -81,7 +89,7 @@ func main() {
 	}
 }
 
-func runApprovalGUI(text string, paneID int, shellType string) interface{} {
+func runApprovalGUI(text string, paneID int, shellType string, waitMs int) interface{} {
 	a := app.New()
 	w := a.NewWindow("MCP Approval")
 	w.Resize(fyne.NewSize(500, 250))
@@ -95,6 +103,8 @@ func runApprovalGUI(text string, paneID int, shellType string) interface{} {
 	infoLabel := widget.NewLabel(fmt.Sprintf("Tool: send_text | Pane: %d | Shell: %s", paneID, shellType))
 
 	edited := false
+	approved := false
+	var approveTime time.Time
 
 	var finalResult interface{}
 
@@ -102,29 +112,93 @@ func runApprovalGUI(text string, paneID int, shellType string) interface{} {
 	editBtn := widget.NewButton(fmt.Sprintf("Show+Edit [%s]", config.Active.Shortcuts.Edit), nil)
 	rejectBtn := widget.NewButton(fmt.Sprintf("Reject [%s]", config.Active.Shortcuts.Reject), nil)
 
+	// Wait button: disabled initially, shows configured wait time
+	waitBtnText := "0.0s"
+	if waitMs > 0 {
+		waitBtnText = fmt.Sprintf("%.1fs", float64(waitMs)/1000.0)
+	}
+	waitBtn := widget.NewButton(waitBtnText, nil)
+	waitBtn.Disable()
+
+	// Hint label for skip functionality (shown during countdown)
+	waitHintLabel := widget.NewLabel("")
+	waitHintLabel.Hide()
+
 	approveBtn.OnTapped = func() {
 		if edited {
-			// Text already staged in terminal - just send Enter
 			paneops.SendEnterToPane(paneID, shellType)
 		} else {
-			// Send text with newline
 			paneops.SendTextWithNewline(paneID, text, shellType)
 		}
+
+		approved = true
+		approveTime = time.Now()
 		finalResult = ApprovalResult{PaneID: paneID, ApprovedByUser: true}
-		a.Quit()
+
+		// Disable action buttons
+		approveBtn.Disable()
+		editBtn.Disable()
+		rejectBtn.Disable()
+
+		if waitMs > 0 {
+			// Start countdown
+			waitBtn.Enable()
+			waitHintLabel.SetText("Click timer to skip waiting")
+			waitHintLabel.Show()
+			remaining := float64(waitMs) / 1000.0
+
+			ticker := time.NewTicker(200 * time.Millisecond)
+			done := make(chan struct{})
+
+			go func() {
+				for {
+					select {
+					case <-done:
+						return
+					case <-ticker.C:
+						remaining -= 0.2
+						if remaining <= 0 {
+							remaining = 0
+							ticker.Stop()
+							close(done)
+							go a.Quit()
+							return
+						}
+						// Update button text
+						remainingCopy := remaining
+						waitBtn.SetText(fmt.Sprintf("%.1fs", remainingCopy))
+					}
+				}
+			}()
+
+			// Skip button handler
+			waitBtn.OnTapped = func() {
+				if !approved {
+					return
+				}
+				ticker.Stop()
+				select {
+				case <-done:
+				default:
+					close(done)
+				}
+				a.Quit()
+			}
+		} else {
+			// No wait - exit immediately
+			a.Quit()
+		}
 	}
 
 	editBtn.OnTapped = func() {
 		edited = true
 		paneops.FocusWezTermWindow()
 		paneops.ActivatePane(paneID)
-		// Stage text in terminal without executing - user edits then presses Approve
 		paneops.SendTextToPane(paneID, text)
 	}
 
 	rejectBtn.OnTapped = func() {
 		if edited {
-			// Clear staged text
 			paneops.ClearLineInPane(paneID, shellType)
 		}
 		finalResult = RejectionResult{Error: "Rejected by user"}
@@ -147,17 +221,26 @@ func runApprovalGUI(text string, paneID int, shellType string) interface{} {
 		Modifier: 0,
 	}, func(_ fyne.Shortcut) { editBtn.OnTapped() })
 
+	// Button row: action buttons left, wait button pushed right
+	buttonRow := container.NewBorder(nil, nil, container.NewHBox(rejectBtn, editBtn, approveBtn), waitBtn)
+
 	content := container.NewVBox(
 		infoLabel,
 		widget.NewSeparator(),
 		widget.NewLabel("Text to send:"),
 		textEntry,
-		container.NewHBox(rejectBtn, editBtn, approveBtn),
+		buttonRow,
+		waitHintLabel,
 	)
 
 	w.SetContent(content)
 	w.ShowAndRun()
 
+	// Compute elapsed time after dialog closes (avoids race condition)
+	if r, ok := finalResult.(ApprovalResult); ok && approved {
+		r.TimeElapsedMs = time.Since(approveTime).Milliseconds()
+		return r
+	}
 	if finalResult != nil {
 		return finalResult
 	}

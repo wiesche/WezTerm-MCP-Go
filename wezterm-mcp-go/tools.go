@@ -93,11 +93,15 @@ func findPopupExe() string {
 }
 
 // runPopupExe executes the popup executable and returns its stdout and exit code.
-func runPopupExe(popupPath, text string, paneID int) (string, int, error) {
+func runPopupExe(popupPath, text string, paneID int, waitMs int) (string, int, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, popupPath, text, strconv.Itoa(paneID))
+	args := []string{text, strconv.Itoa(paneID)}
+	if waitMs > 0 {
+		args = append(args, strconv.Itoa(waitMs))
+	}
+	cmd := exec.CommandContext(ctx, popupPath, args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -388,36 +392,42 @@ func sendTextHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToo
 	if config.Active != nil && config.Active.UserApproval {
 		popupPath := findPopupExe()
 		if popupPath != "" {
-			// Call popup executable blocking - popup handles UI + wezterm send
-			popupOut, exitCode, err := runPopupExe(popupPath, text, paneID)
+			// Determine wait time for popup countdown
+			popupWaitMs := effectiveWaitMs
+			if popupWaitMs == 0 {
+				popupWaitMs = 500 // Default when user_approval but no explicit wait
+			}
+
+			// Call popup executable blocking - popup handles UI + wezterm send + countdown
+			popupOut, exitCode, err := runPopupExe(popupPath, text, paneID, popupWaitMs)
 			if err != nil || exitCode != 0 {
 				// Popup crashed or rejected
 				return mcp.NewToolResultError("Rejected by user"), nil
 			}
 
-			// Popup approved - now capture output on the server side
-			// The command has already been sent by popup; wait then diff
-			waitMs := effectiveWaitMs
-			if waitMs == 0 {
-				waitMs = 500 // Default when user_approval but no explicit wait
+			// Popup approved and countdown completed - now capture output on the server side
+			// The wait has already elapsed inside the popup, so no additional wait needed
+
+			// Parse popup's JSON to extract time_elapsed_ms
+			var popupResult struct {
+				TimeElapsedMs int64 `json:"time_elapsed_ms"`
 			}
+			json.Unmarshal([]byte(popupOut), &popupResult)
 
 			result := map[string]interface{}{}
-			// Parse popup's minimal JSON for pane_id confirmation
-			_ = popupOut // popup JSON used for exit code only at this point
-
 			result["pane_id"] = paneID
 			result["auto_selected"] = autoSelected
-			result["message"] = fmt.Sprintf("Text sent to pane d%", paneID)
+			result["message"] = fmt.Sprintf("Text sent to pane %d", paneID)
 			result["approved_by_user"] = true
+			result["time_elapsed_ms"] = popupResult.TimeElapsedMs
 			if len(warnings) > 0 {
 				result["warnings"] = warnings
 			}
 
 			if shouldCapture && refLines != nil {
-				newLines, elapsed, _, captureErr := paneops.CaptureOutput(
+				newLines, _, _, captureErr := paneops.CaptureOutput(
 					paneID, refLines,
-					waitMs, // Use the effective wait (already includes override)
+					0, // No additional wait - popup already counted down
 					config.Active.MaxNewLinesReturned,
 					config.Active.ReferenceTextWindow,
 					config.Active.LineCompareMaxChars,
@@ -425,7 +435,6 @@ func sendTextHandler(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToo
 				if captureErr == nil && len(newLines) > 0 {
 					outputSnapshot, _ := paneops.FormatOutputSnapshot(newLines, config.Active.MaxNewLinesReturned)
 					result["output_snapshot"] = outputSnapshot
-					result["time_elapsed_ms"] = elapsed.Milliseconds()
 				}
 			}
 
